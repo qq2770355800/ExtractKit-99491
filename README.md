@@ -15,6 +15,26 @@
 - **执行**：同一份载荷读 profile 里的常量跑，不需要 PC、不需要重编。
 - **同 build 的其他人**：把 profile 分享出去，对方「导入」即可，主页直接显示「已适配」。
 
+## 界面说明
+
+一个主界面 + 一个标定页 + 一个日志面板，全部用 Compose 画，日夜双主题。
+
+- **主页**：大标题与右上角日/月开关；往下依次是「环境」卡（Shizuku / root 通道是否就绪，
+  未就绪时给安装入口）、「设备」卡（机型、内核完整版本、适配结论）、「执行链路」卡
+  （当前链与分支，点开是底部面板），再是「标定」「安全模式」「根管理器」「支持开发」四行，
+  底部是主按钮「开始提权」与右下角日志圆钮。
+- **执行链路面板**：从底部上滑，没有入场动画 —— 点下去当帧出现，不拖 300 ms；三条分支
+  （`real_cred` / `tracefs` / `no-tracefs`）各带一句前置条件，选中项右侧打勾。
+- **标定页**：左上角 X 关闭；四行状态（内核、BTF 结构体偏移、符号表、标定产物）未解析时显示
+  灰字；下面是「导入本机固件包」入口、解析日志框（等宽字体，提示「选一个 boot.img 开始」）、
+  底部「保存 / 导入 / 分享」三颗胶囊按钮，再往下是「查询固件包」。
+- **运行日志**：右下角圆钮打开；标题栏是「运行日志 · 第 N/M 份」与「上一条 / 下一条 / 复制」，
+  右侧文件名形如 `extract-20261128-231641.log`，正文等宽、可滚动、可整段复制。
+- **视觉**：卡片 30 dp 圆角、玻璃拟态（背景模糊 + 边缘高光 + 轻微透镜折射），底色是渐变加
+  缓慢漂移的光斑；切到夜色不是整体淡入，而是以主题开关为圆心铺开的圆形揭示，背面带一层星空。
+
+状态一律写在卡片副标题里（未就绪用琥珀色、失败用红色、就绪用绿色），不弹模态框、不打断操作。
+
 ## 漏洞原理
 
 ### CVE-2026-99491 · uinput / uhid（主力链，全内核家族）
@@ -37,18 +57,6 @@
 - **收尾**：exec CLI 之前必须把 `outq[0]/outq[1]` 置 NULL。这些 fd 都带 `O_CLOEXEC`，CLI 的
   `daemonize()` 关掉继承的 fd 会走 `uhid_char_release()`，对我们回收的那块 2 KB 槽再
   `kfree()` 一次，约一秒后 panic；置 NULL 之后释放路径只做 `kfree(NULL)`。
-
-### CVE-2026-98260 · posix timer UAF（多家族：5.10 / 5.15 / 6.1 / 6.6 / 6.12 / 6.18）
-
-- **缺陷**：`k_itimer`（`posix_timers_cache`）释放后仍被使用。
-- **写原语更窄**：只能对目标做 8 字节**归零写**，写不进可控指针。所以这条链不靠"指向伪造 cred"，
-  而是配合内核模块补丁（`ko_patch.c`）把清零落在凭据相关字段上再拿 uid 0。
-- **每个家族一支载荷**：`payload/fam/ek-core-uid0-<家族>`，编译期带 `-DEXPECT_FAMILY="<前缀>"`
-  族闸门和 `-DEXTRACTKIT_FAMILY_ID`，跑错家族会直接拒跑。其中 **6.6 是本机实测标定**，
-  其余家族是 offsets-only 待标定（标定完即可跑，成败另说）。
-- **6.12 支多一段**：拿到 uid-0 cred 后在本机进程内 patch 并 `finit_module` 该 release 的
-  `kernelsu.ko`，再跑 root_stage 装 ksud —— 这段装载路线**只对 6.12 生效**；release 不是
-  已知的两条 6.12 前缀时自动退回纯 uid-0 shell。其余家族到 uid 0 为止。
 
 ### 三条分支怎么选
 
@@ -74,10 +82,9 @@ app/src/main/assets/
   payload/wacom/ek-w1-uid0-6.6      99491 主载荷（AArch64 静态 ELF）
   payload/wacom/profiles/*.json     已导入的标定产物
   payload/wacom/ko-syms-*.txt       各 build 的内核符号表（模块补丁用）
-  payload/ek-core-android           98260 载荷（6.12）
   stage/ksu_stage.sh                ghost 链的脚本化装载（Shizuku 侧）
 payload/
-  src/                 99491 之前的 98260 / ek-core 源
+  src/                 99491 早期 ek-core 源
   wacom-src/           当前 99491 载荷的 C 源（exp.c / ksu_boot.c / ko_patch.c）
 tools/                 标定与构建脚本（kallsyms 扫描、BTF dump、配置生成、发版）
 glass/                 Compose 组件库
@@ -103,7 +110,6 @@ gradlew assembleRelease        # 产物 app/build/outputs/apk/release/
   `lib/<abi>/*.so` 里挑出 ksud CLI，不同管理器（SukiSU Nova / KernelSU / 改名包 / 分身）
   的 so 名字不同，所以不能写死 `libksud.so`。
 - `no-tracefs` 分支是实验性的：它依赖伪造 cred 的完整能力集，能写 `/data/adb` 但不保证稳定。
-- 98260 链各家族载荷里只有 6.6 在本机实测标定过，其余家族是 offsets-only 待标定；6.12 的「进程内 patch + finit_module」那段没有真机数据。
 - 标定只对 **同 build** 有效；同族不同 build 的符号地址和 call site 都会变。
 
 ## 许可与致谢
@@ -116,7 +122,7 @@ gradlew assembleRelease        # 产物 app/build/outputs/apk/release/
 | --- | --- | --- |
 | 全仓 | GPL-2.0 | 见上 |
 | `payload/wacom-src/exp.c`、`assets/payload/wacom/ek-w1-uid0-6.6` | GPL-2.0-only | 衍生自 [woshigenm/CVE-2026-99491-FANXIAOCHAO](https://github.com/woshigenm/CVE-2026-99491-FANXIAOCHAO) |
-| `payload/src/`（98260 链）、`assets/payload/ek-core-android` | 上游 MIT，仓内按 GPL-2.0 分发 | [woshigenm/CVE-2026-98260](https://github.com/woshigenm/CVE-2026-98260) |
+| `payload/src/`（上游 PoC 移植）、`assets/payload/ek-core-android` | 上游 MIT，仓内按 GPL-2.0 分发 | [woshigenm/CVE-2026-98260](https://github.com/woshigenm/CVE-2026-98260) |
 | `payload/wacom-src/ksu_boot.c`、`payload/src/ek-core-uid0.c` | 原创 | 运行时调用管理器 CLI，不捆绑 KernelSU 代码 |
 
 ### 致谢
@@ -129,14 +135,11 @@ gradlew assembleRelease        # 产物 app/build/outputs/apk/release/
   —— `late-load` 机制与内核模块格式（GPL-3.0，本仓库只调用、不捆绑）
 - [RikkaApps/Shizuku](https://github.com/RikkaApps/Shizuku)
   —— 无 root 侧的执行通道（Apache-2.0，只调用、不捆绑）
-- [YuKongA/CVE-2026-98260](https://github.com/YuKongA/CVE-2026-98260)
-  —— fake cred + ksud late-load 组合思路的参考实现
 - [wushidia/dada-cve](https://github.com/wushidia/dada-cve)、
   [nisu123f/dada-cve-AN00](https://github.com/nisu123f/dada-cve-AN00)
   —— call site 基线与 Honor 机型的移植参考
 - [V4bel](https://github.com/V4bel)（Hyunwoo Kim）
   —— EK-CORE 系列的原始研究思路（早期仓库已不可查，致作者主页）
-- GhostKey 系列工具 —— 早期出处 `Again1996-bit/EK-CORE-GhostKey` 已 404，
-  同族公开实现见 [Feiman55/CVE-2026-98260-GhostKey](https://github.com/Feiman55/CVE-2026-98260-GhostKey)
+- GhostKey 系列工具 —— 早期出处 `Again1996-bit/EK-CORE-GhostKey` 已 404
 
 第三方本体（KernelSU 的 `ksud`/`kernelsu.ko`、Shizuku）由用户自行安装，仓库内不含其源码或二进制。
